@@ -78,7 +78,25 @@ python -m fishbot.main --debug-mask -v
 `scripts\run.bat` and `scripts\run-gui.bat` are dev-mode shortcuts for the
 above.
 
-### Building the installer
+### Building the one-shot bootstrap installer
+
+A small (~10 MB) `.exe` that, on first run, downloads everything needed
+(Python embeddable, pip, Tesseract, fishbot source) into
+`%LOCALAPPDATA%\Fishbot`, then launches the GUI. Idempotent: re-running it
+just relaunches the GUI.
+
+Prerequisites: Python 3.12+ on PATH. No Inno Setup, no Tesseract download,
+no PyQt6 needed on the build machine — the heavy bits are fetched at
+install time on the user's box.
+
+```powershell
+$env:FISHBOT_SOURCE_URL = "https://github.com/<user>/fishbot-windows/archive/refs/tags/v1.0.0.zip"
+powershell -ExecutionPolicy Bypass -File installer\build-bootstrap.ps1
+```
+
+Output: `dist\fishbot-setup.exe`. Ship that single file.
+
+### Building the full (offline) installer
 
 Prerequisites on the build machine:
 
@@ -123,10 +141,13 @@ fishbot-windows/
 │   ├── run.bat
 │   └── run-gui.bat
 ├── installer/
-│   ├── fishbot.iss             # Inno Setup script
-│   ├── build.ps1               # build pipeline
+│   ├── fishbot.iss             # Inno Setup script (offline installer)
+│   ├── build.ps1               # offline-installer build pipeline
 │   ├── fishbot.spec            # PyInstaller spec — CLI exe
 │   ├── fishbot-gui.spec        # PyInstaller spec — GUI exe
+│   ├── bootstrap.py            # one-shot network bootstrap installer
+│   ├── bootstrap.spec          # PyInstaller spec — bootstrap exe
+│   ├── build-bootstrap.ps1     # bootstrap-installer build pipeline
 │   └── vendor/tesseract/       # populated by the maintainer, gitignored
 └── tests/
     └── test_smoke.py

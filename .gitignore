@@ -11,6 +11,7 @@ __pycache__/
 # Virtual envs
 .venv/
 .build-venv/
+.bootstrap-venv/
 venv/
 
 # Bundled third-party — checked in only on the build machine

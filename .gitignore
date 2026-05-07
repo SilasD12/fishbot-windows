@@ -1,0 +1,26 @@
+# Build outputs
+build/
+dist/
+*.spec.bak
+
+# PyInstaller intermediates
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual envs
+.venv/
+.build-venv/
+venv/
+
+# Bundled third-party — checked in only on the build machine
+installer/vendor/tesseract/
+
+# User runtime data (in case someone runs from the repo)
+debug_frames/
+*.log
+
+# Editor
+.idea/
+.vscode/
+*.swp

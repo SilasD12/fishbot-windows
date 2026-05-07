@@ -1,0 +1,31 @@
+[project]
+name = "fishbot"
+version = "1.0.0"
+description = "AFK fishing bot for Roblox Bridger:WESTERN on Windows 10/11"
+requires-python = ">=3.12"
+dependencies = [
+    "opencv-python>=4.10",
+    "numpy>=2.0",
+    "pytesseract>=0.3.13",
+    "PyQt6>=6.7",
+    "mss>=9.0",
+    "pydirectinput>=1.0.4",
+    "psutil>=5.9",
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+build = [
+    "pyinstaller>=6.10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fishbot"]
+
+[project.scripts]
+fishbot = "fishbot.main:main"
+fishbot-gui = "fishbot.gui:main"

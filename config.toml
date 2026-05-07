@@ -1,0 +1,138 @@
+# Fishbot configuration. Edit by hand or run `python -m fishbot.calibrate`.
+
+[window]
+# Process name (executable) of the game window. The bot enumerates visible
+# top-level windows and picks the first one belonging to a process whose
+# image name matches this string (case-insensitive).
+process_name = "RobloxPlayerBeta.exe"
+
+[cast]
+# Window-RELATIVE rectangle to click in to cast. The runtime adds the window's
+# (x, y) offset before issuing the click. Set via calibrate.py.
+rect = { x = 891, y = 654, w = 244, h = 207 }
+randomize = false
+
+[vision]
+# Red HSV ranges (red wraps around 0/180 in OpenCV's H = 0..179).
+hook_hsv_lower_a = [0, 120, 80]
+hook_hsv_upper_a = [10, 255, 255]
+hook_hsv_lower_b = [170, 120, 80]
+hook_hsv_upper_b = [180, 255, 255]
+hook_min_radius_px = 2
+hook_max_radius_px = 30
+hook_min_circularity = 0.6
+# Y-drop bite signal: bobber Y must be this many pixels below its rolling
+# median baseline AND stay there for `bite_sustain_frames` consecutive frames.
+bite_y_drop_px = 25
+bite_sustain_frames = 4
+# Y-drop is ignored while hook detection is flickering. This prevents temporary
+# bad hook positions from causing premature reels after hook LOST/back loops.
+y_drop_recent_visible_frames = 10
+position_history_len = 40
+baseline_exclude_tail = 8
+
+# Bright cyan/blue fish-approach ripple. The known in-game colors are:
+# - Day:   #33c4da -> OpenCV HSV [94, 195, 218]
+# - Night: #274544 -> OpenCV HSV [89, 111, 69]
+# Light daytime water can wash the cyan ripple down to low saturation while
+# keeping it in the same hue family.
+# Keep these as separate narrow bands so normal water does not count as fish.
+fish_hsv_ranges = [
+  { lower = [90, 150, 150], upper = [98, 255, 255] },
+  { lower = [80, 35, 130], upper = [96, 125, 255] },
+  { lower = [86, 75, 45], upper = [94, 160, 105] },
+]
+# Search box (square, half-width) around last hook position.
+fish_search_radius_px = 80
+# Pixels of blue within the search box that count as "fish present".
+fish_min_pixels = 30
+# Ignore fish-ripple pixels briefly after the hook first appears. This prevents
+# the cast splash/ripple from seeding fish_history as a fake fish approach.
+fish_initial_ignore_seconds = 2.0
+
+[qte]
+crop_w = 220
+crop_h = 220
+# Letters only — number keys (1-0) are item slots in this game; pressing
+# them swaps weapons. The chest/QTE prompts only ever show letters.
+ocr_whitelist = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+poll_seconds = 5.0
+# Keep watching after each confirmed key because the pre-chest QTE can be a
+# short sequence, not a single prompt.
+quiet_seconds = 3.0
+max_sequence_seconds = 12.0
+# Don't repeat the same key faster than this.
+debounce_ms = 250
+
+[chest]
+# Detect the chest object itself, walk close enough, then hold E to claim it.
+# Known night wood samples #1f1714 and #211a16 are around OpenCV HSV
+# [8, 90, 31] and [11, 85, 33]. Day wood #90736a is [7, 67, 144].
+# Dirt samples #110e08 and #514339 are [20, 135, 17] and [13, 76, 81].
+hsv_ranges = [
+  { lower = [0, 50, 24], upper = [16, 170, 64] },
+  { lower = [0, 45, 110], upper = [12, 120, 190] },
+  { lower = [5, 80, 95], upper = [24, 230, 165] },
+]
+# How long to look for a spawned chest after the QTE sequence ends.
+watch_seconds = 8.0
+# Short movement pulses keep capture feedback responsive while approaching.
+approach_step_seconds = 0.30
+max_approach_seconds = 5.5
+hold_e_seconds = 2.5
+# Treat the chest as close when its bounding box is this tall relative to the
+# window. Lower this if the bot strafes too long before stopping to hold E.
+close_height_ratio = 0.19
+# Stop strafing if the full window is no longer mostly green grass. This keeps
+# the bot from walking across the water after overshooting the chest.
+grass_min_screen_ratio = 0.35
+# Grace period before the grass-safety abort can trigger, so the bot has time
+# to actually start strafing toward the chest before checking grass coverage.
+grass_grace_seconds = 0.6
+# Above this grass coverage we assume the chest spawn knocked the character
+# onto the land. The bot walks forward (A+E) blindly until grass drops below
+# this, then starts using the chest detector for fine approach.
+grass_walk_threshold = 0.55
+grass_hsv_lower = [35, 45, 20]
+grass_hsv_upper = [95, 255, 255]
+# Shape filters for the detected wood blob.
+min_area_px = 450
+min_width_px = 35
+min_height_px = 28
+max_width_ratio = 0.55
+max_height_ratio = 0.45
+min_aspect = 0.65
+max_aspect = 3.2
+min_fill_ratio = 0.12
+max_fill_ratio = 1.0
+scan_y_min_ratio = 0.25
+scan_y_max_ratio = 0.98
+
+[loop]
+capture_hz = 20
+cast_settle_seconds = 1.5
+reel_after_bite_ms = 0
+# Reel click location as window-relative ratios. The click can be almost
+# anywhere, but avoid the center because the cursor can cover the QTE key.
+reel_click_x_ratio = 0.82
+reel_click_y_ratio = 0.50
+# Hard cap on how long to wait for a fish before re-casting.
+max_wait_bite_seconds = 60
+# If the hook disappears without a fish-contact or Y-drop bite signal, assume
+# the cast failed/desynced and re-cast instead of waiting the full bite timeout.
+max_hook_lost_seconds = 8.0
+# If the hook keeps flickering visible/lost without ever seeing a fish ripple,
+# the cast likely failed (e.g. focus/click missed). Re-cast after this many
+# back/lost transitions within the flicker window.
+flicker_window_seconds = 5.0
+flicker_max_transitions = 6
+# Only count flicker as a failed cast if hook positions are scattered. A real
+# wobbly bobber clusters within ~10-15px; a failed cast that latches onto
+# stray red noise spreads further. Bail only when both transition count and
+# position spread exceed their thresholds.
+flicker_min_spread_px = 30.0
+# Once a bobber is locked in WAIT_BITE, ignore any later "hook" detections
+# farther than this many pixels from the last known bobber position. Prevents
+# the detector from latching onto static red HUD elements when the bobber goes
+# underwater for a bite.
+hook_lock_radius_px = 60

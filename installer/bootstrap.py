@@ -269,8 +269,11 @@ def install_python_deps(ui: ProgressUI) -> None:
     ui.set(
         "Installing Python dependencies (PyQt6, OpenCV, NumPy… a few minutes)"
     )
-    # Embeddable Python ships without setuptools/wheel; pip's editable install
-    # path needs them resolvable in the build env.
+    # Pre-install build backend deps. The Python embeddable distribution's
+    # python._pth restricts sys.path, which breaks pip's PEP 517 build
+    # isolation: the child Python it spawns to invoke hatchling can't see
+    # the temporary build env, so the backend import fails. Workaround:
+    # install hatchling/editables into our Python and disable isolation.
     _run([
         str(PY_EXE),
         "-m",
@@ -280,6 +283,8 @@ def install_python_deps(ui: ProgressUI) -> None:
         "--upgrade",
         "setuptools",
         "wheel",
+        "hatchling",
+        "editables",
     ])
     _run([
         str(PY_EXE),
@@ -287,6 +292,7 @@ def install_python_deps(ui: ProgressUI) -> None:
         "pip",
         "install",
         "--no-warn-script-location",
+        "--no-build-isolation",
         "-e",
         str(APP_DIR),
     ])

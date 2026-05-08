@@ -1,0 +1,78 @@
+name: Build & publish bootstrap installer
+
+# Builds installer/bootstrap.py into a single-file `fishbot-setup.exe` on a
+# Windows runner and uploads it to the GitHub Release for the pushed tag.
+#
+# Trigger: push a tag matching `v*` (e.g. `git tag v1.0.0 && git push --tags`).
+# Manual runs are also supported via the "Run workflow" button — the resulting
+# .exe is uploaded as a workflow artifact instead of a release asset.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Determine source URL
+        id: src
+        shell: pwsh
+        run: |
+          $repo = "${{ github.repository }}"
+          if ($env:GITHUB_REF -like "refs/tags/*") {
+            $tag = $env:GITHUB_REF -replace "^refs/tags/", ""
+            $url = "https://github.com/$repo/archive/refs/tags/$tag.zip"
+            "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            $sha = "${{ github.sha }}"
+            $url = "https://github.com/$repo/archive/$sha.zip"
+            "tag=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+          Write-Host "FISHBOT_SOURCE_URL=$url"
+          "url=$url" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Build fishbot-setup.exe
+        shell: pwsh
+        env:
+          FISHBOT_SOURCE_URL: ${{ steps.src.outputs.url }}
+        run: |
+          powershell -ExecutionPolicy Bypass -File installer\build-bootstrap.ps1
+
+      - name: Verify artifact
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist\fishbot-setup.exe")) {
+            Write-Error "dist\fishbot-setup.exe was not produced"
+            exit 1
+          }
+          Get-Item dist\fishbot-setup.exe | Format-List FullName, Length
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fishbot-setup
+          path: dist/fishbot-setup.exe
+          if-no-files-found: error
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/fishbot-setup.exe
+          generate_release_notes: true
+          fail_on_unmatched_files: true

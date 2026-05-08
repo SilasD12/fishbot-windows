@@ -8,7 +8,7 @@
 block_cipher = None
 
 a = Analysis(
-    ["installer/bootstrap.py"],
+    ["bootstrap.py"],
     pathex=[],
     binaries=[],
     datas=[],

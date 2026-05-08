@@ -13,7 +13,9 @@ first run, downloads everything needed to run fishbot and launches the GUI:
 Idempotent: re-running skips already-installed components and re-launches
 the GUI.
 
-No admin / UAC required. Per-user install only.
+The bootstrapper itself runs per-user; it triggers a single UAC prompt for
+the Tesseract installer (UB-Mannheim's build is an Inno Setup
+`requireAdministrator` package).
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ import threading
 import traceback
 import urllib.request
 import zipfile
+from ctypes import wintypes
 from pathlib import Path
 from tkinter import StringVar, Tk, ttk
 
@@ -122,7 +125,85 @@ def _download(url: str, dest: Path) -> None:
 
 
 def _run(cmd: list[str]) -> None:
-    subprocess.run(cmd, check=True, creationflags=CREATE_NO_WINDOW)
+    # Capture stdout+stderr so a non-zero exit raises with the actual output —
+    # otherwise pip / installer failures surface as bare CalledProcessErrors.
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=CREATE_NO_WINDOW,
+    )
+    if proc.returncode != 0:
+        tail = "\n".join(
+            (proc.stdout or "").splitlines()[-40:]
+            + (proc.stderr or "").splitlines()[-40:]
+        )
+        raise RuntimeError(
+            f"Command failed (exit {proc.returncode}):\n"
+            f"  {' '.join(cmd)}\n\n{tail}"
+        )
+
+
+class _ShellExecuteInfoW(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("fMask", ctypes.c_ulong),
+        ("hwnd", wintypes.HWND),
+        ("lpVerb", wintypes.LPCWSTR),
+        ("lpFile", wintypes.LPCWSTR),
+        ("lpParameters", wintypes.LPCWSTR),
+        ("lpDirectory", wintypes.LPCWSTR),
+        ("nShow", ctypes.c_int),
+        ("hInstApp", wintypes.HINSTANCE),
+        ("lpIDList", ctypes.c_void_p),
+        ("lpClass", wintypes.LPCWSTR),
+        ("hkeyClass", wintypes.HKEY),
+        ("dwHotKey", wintypes.DWORD),
+        ("hIconOrMonitor", wintypes.HANDLE),
+        ("hProcess", wintypes.HANDLE),
+    ]
+
+
+def _run_elevated(exe: Path, args: list[str]) -> None:
+    """Run *exe* with UAC elevation and wait for it to exit.
+
+    Raises on cancelled UAC prompt or non-zero exit code.
+    """
+    SEE_MASK_NOCLOSEPROCESS = 0x00000040
+    SEE_MASK_NOASYNC = 0x00000100
+    SW_SHOWNORMAL = 1
+    INFINITE = 0xFFFFFFFF
+
+    # Quote each arg the way CommandLineToArgvW expects.
+    params = subprocess.list2cmdline(args)
+
+    info = _ShellExecuteInfoW()
+    info.cbSize = ctypes.sizeof(info)
+    info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC
+    info.lpVerb = "runas"
+    info.lpFile = str(exe)
+    info.lpParameters = params
+    info.nShow = SW_SHOWNORMAL
+
+    if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(info)):
+        # ERROR_CANCELLED (1223) when the user clicks "No" on the UAC prompt.
+        raise ctypes.WinError()
+
+    try:
+        ctypes.windll.kernel32.WaitForSingleObject(info.hProcess, INFINITE)
+        code = wintypes.DWORD()
+        if not ctypes.windll.kernel32.GetExitCodeProcess(
+            info.hProcess, ctypes.byref(code)
+        ):
+            raise ctypes.WinError()
+        if code.value != 0:
+            raise RuntimeError(
+                f"{Path(exe).name} exited with code {code.value}"
+            )
+    finally:
+        ctypes.windll.kernel32.CloseHandle(info.hProcess)
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +269,18 @@ def install_python_deps(ui: ProgressUI) -> None:
     ui.set(
         "Installing Python dependencies (PyQt6, OpenCV, NumPy… a few minutes)"
     )
+    # Embeddable Python ships without setuptools/wheel; pip's editable install
+    # path needs them resolvable in the build env.
+    _run([
+        str(PY_EXE),
+        "-m",
+        "pip",
+        "install",
+        "--no-warn-script-location",
+        "--upgrade",
+        "setuptools",
+        "wheel",
+    ])
     _run([
         str(PY_EXE),
         "-m",
@@ -200,31 +293,60 @@ def install_python_deps(ui: ProgressUI) -> None:
     marker.write_text("ok")
 
 
-def install_tesseract(ui: ProgressUI, work: Path) -> None:
+def _find_existing_tesseract() -> Path | None:
+    """Return directory containing tesseract.exe if one is already installed."""
+    found = shutil.which("tesseract")
+    if found:
+        return Path(found).parent
+    candidates = [
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        / "Tesseract-OCR",
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
+        / "Tesseract-OCR",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Tesseract-OCR",
+    ]
+    for candidate in candidates:
+        if (candidate / "tesseract.exe").exists():
+            return candidate
+    return None
+
+
+def install_tesseract(ui: ProgressUI, work: Path) -> Path:
+    """Ensure Tesseract is available; return the directory containing tesseract.exe."""
     if (TESS_DIR / "tesseract.exe").exists():
-        return
+        return TESS_DIR
+    existing = _find_existing_tesseract()
+    if existing is not None:
+        ui.set(f"Found existing Tesseract at {existing}")
+        return existing
     ui.set(f"Downloading Tesseract {TESSERACT_VERSION}…")
     setup_exe = work / "tesseract-setup.exe"
     _download(TESSERACT_URL, setup_exe)
-    ui.set("Installing Tesseract…")
+    ui.set("Installing Tesseract… (approve the UAC prompt)")
     TESS_DIR.mkdir(parents=True, exist_ok=True)
-    _run([
-        str(setup_exe),
-        "/VERYSILENT",
-        "/SUPPRESSMSGBOXES",
-        "/NORESTART",
-        "/SP-",
-        "/NOICONS",
-        f"/DIR={TESS_DIR}",
-    ])
+    # UB-Mannheim's installer is built with PrivilegesRequired=admin, so
+    # CreateProcess fails with ERROR_ELEVATION_REQUIRED (740). Launch it
+    # through ShellExecuteEx so Windows shows a UAC prompt and elevates.
+    _run_elevated(
+        setup_exe,
+        [
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/SP-",
+            "/NOICONS",
+            f"/DIR={TESS_DIR}",
+        ],
+    )
+    return TESS_DIR
 
 
-def write_launcher() -> None:
+def write_launcher(tess_dir: Path) -> None:
     LAUNCHER.write_text(
         "@echo off\r\n"
         "setlocal\r\n"
-        f'set "PATH={TESS_DIR};%PATH%"\r\n'
-        f'set "TESSDATA_PREFIX={TESS_DIR}"\r\n'
+        f'set "PATH={tess_dir};%PATH%"\r\n'
+        f'set "TESSDATA_PREFIX={tess_dir}"\r\n'
         f'start "" "{PY_EXE}" -m fishbot.gui %*\r\n',
         encoding="ascii",
     )
@@ -267,9 +389,9 @@ def install(ui: ProgressUI) -> None:
         install_python(ui, work)
         install_pip(ui, work)
         install_fishbot_source(ui, work)
-        install_tesseract(ui, work)
+        tess_dir = install_tesseract(ui, work)
         install_python_deps(ui)
-    write_launcher()
+    write_launcher(tess_dir)
     make_start_menu_shortcut()
     ui.set("Launching Fishbot…")
     launch_gui()

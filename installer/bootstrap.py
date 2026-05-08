@@ -13,7 +13,9 @@ first run, downloads everything needed to run fishbot and launches the GUI:
 Idempotent: re-running skips already-installed components and re-launches
 the GUI.
 
-No admin / UAC required. Per-user install only.
+The bootstrapper itself runs per-user; it triggers a single UAC prompt for
+the Tesseract installer (UB-Mannheim's build is an Inno Setup
+`requireAdministrator` package).
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ import threading
 import traceback
 import urllib.request
 import zipfile
+from ctypes import wintypes
 from pathlib import Path
 from tkinter import StringVar, Tk, ttk
 
@@ -125,6 +128,66 @@ def _run(cmd: list[str]) -> None:
     subprocess.run(cmd, check=True, creationflags=CREATE_NO_WINDOW)
 
 
+class _ShellExecuteInfoW(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("fMask", ctypes.c_ulong),
+        ("hwnd", wintypes.HWND),
+        ("lpVerb", wintypes.LPCWSTR),
+        ("lpFile", wintypes.LPCWSTR),
+        ("lpParameters", wintypes.LPCWSTR),
+        ("lpDirectory", wintypes.LPCWSTR),
+        ("nShow", ctypes.c_int),
+        ("hInstApp", wintypes.HINSTANCE),
+        ("lpIDList", ctypes.c_void_p),
+        ("lpClass", wintypes.LPCWSTR),
+        ("hkeyClass", wintypes.HKEY),
+        ("dwHotKey", wintypes.DWORD),
+        ("hIconOrMonitor", wintypes.HANDLE),
+        ("hProcess", wintypes.HANDLE),
+    ]
+
+
+def _run_elevated(exe: Path, args: list[str]) -> None:
+    """Run *exe* with UAC elevation and wait for it to exit.
+
+    Raises on cancelled UAC prompt or non-zero exit code.
+    """
+    SEE_MASK_NOCLOSEPROCESS = 0x00000040
+    SEE_MASK_NOASYNC = 0x00000100
+    SW_SHOWNORMAL = 1
+    INFINITE = 0xFFFFFFFF
+
+    # Quote each arg the way CommandLineToArgvW expects.
+    params = subprocess.list2cmdline(args)
+
+    info = _ShellExecuteInfoW()
+    info.cbSize = ctypes.sizeof(info)
+    info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC
+    info.lpVerb = "runas"
+    info.lpFile = str(exe)
+    info.lpParameters = params
+    info.nShow = SW_SHOWNORMAL
+
+    if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(info)):
+        # ERROR_CANCELLED (1223) when the user clicks "No" on the UAC prompt.
+        raise ctypes.WinError()
+
+    try:
+        ctypes.windll.kernel32.WaitForSingleObject(info.hProcess, INFINITE)
+        code = wintypes.DWORD()
+        if not ctypes.windll.kernel32.GetExitCodeProcess(
+            info.hProcess, ctypes.byref(code)
+        ):
+            raise ctypes.WinError()
+        if code.value != 0:
+            raise RuntimeError(
+                f"{Path(exe).name} exited with code {code.value}"
+            )
+    finally:
+        ctypes.windll.kernel32.CloseHandle(info.hProcess)
+
+
 # ---------------------------------------------------------------------------
 # Steps
 # ---------------------------------------------------------------------------
@@ -206,17 +269,22 @@ def install_tesseract(ui: ProgressUI, work: Path) -> None:
     ui.set(f"Downloading Tesseract {TESSERACT_VERSION}…")
     setup_exe = work / "tesseract-setup.exe"
     _download(TESSERACT_URL, setup_exe)
-    ui.set("Installing Tesseract…")
+    ui.set("Installing Tesseract… (approve the UAC prompt)")
     TESS_DIR.mkdir(parents=True, exist_ok=True)
-    _run([
-        str(setup_exe),
-        "/VERYSILENT",
-        "/SUPPRESSMSGBOXES",
-        "/NORESTART",
-        "/SP-",
-        "/NOICONS",
-        f"/DIR={TESS_DIR}",
-    ])
+    # UB-Mannheim's installer is built with PrivilegesRequired=admin, so
+    # CreateProcess fails with ERROR_ELEVATION_REQUIRED (740). Launch it
+    # through ShellExecuteEx so Windows shows a UAC prompt and elevates.
+    _run_elevated(
+        setup_exe,
+        [
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/SP-",
+            "/NOICONS",
+            f"/DIR={TESS_DIR}",
+        ],
+    )
 
 
 def write_launcher() -> None:

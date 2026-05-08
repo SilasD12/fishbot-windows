@@ -125,7 +125,25 @@ def _download(url: str, dest: Path) -> None:
 
 
 def _run(cmd: list[str]) -> None:
-    subprocess.run(cmd, check=True, creationflags=CREATE_NO_WINDOW)
+    # Capture stdout+stderr so a non-zero exit raises with the actual output —
+    # otherwise pip / installer failures surface as bare CalledProcessErrors.
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=CREATE_NO_WINDOW,
+    )
+    if proc.returncode != 0:
+        tail = "\n".join(
+            (proc.stdout or "").splitlines()[-40:]
+            + (proc.stderr or "").splitlines()[-40:]
+        )
+        raise RuntimeError(
+            f"Command failed (exit {proc.returncode}):\n"
+            f"  {' '.join(cmd)}\n\n{tail}"
+        )
 
 
 class _ShellExecuteInfoW(ctypes.Structure):
@@ -251,6 +269,18 @@ def install_python_deps(ui: ProgressUI) -> None:
     ui.set(
         "Installing Python dependencies (PyQt6, OpenCV, NumPy… a few minutes)"
     )
+    # Embeddable Python ships without setuptools/wheel; pip's editable install
+    # path needs them resolvable in the build env.
+    _run([
+        str(PY_EXE),
+        "-m",
+        "pip",
+        "install",
+        "--no-warn-script-location",
+        "--upgrade",
+        "setuptools",
+        "wheel",
+    ])
     _run([
         str(PY_EXE),
         "-m",
@@ -263,9 +293,32 @@ def install_python_deps(ui: ProgressUI) -> None:
     marker.write_text("ok")
 
 
-def install_tesseract(ui: ProgressUI, work: Path) -> None:
+def _find_existing_tesseract() -> Path | None:
+    """Return directory containing tesseract.exe if one is already installed."""
+    found = shutil.which("tesseract")
+    if found:
+        return Path(found).parent
+    candidates = [
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        / "Tesseract-OCR",
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
+        / "Tesseract-OCR",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Tesseract-OCR",
+    ]
+    for candidate in candidates:
+        if (candidate / "tesseract.exe").exists():
+            return candidate
+    return None
+
+
+def install_tesseract(ui: ProgressUI, work: Path) -> Path:
+    """Ensure Tesseract is available; return the directory containing tesseract.exe."""
     if (TESS_DIR / "tesseract.exe").exists():
-        return
+        return TESS_DIR
+    existing = _find_existing_tesseract()
+    if existing is not None:
+        ui.set(f"Found existing Tesseract at {existing}")
+        return existing
     ui.set(f"Downloading Tesseract {TESSERACT_VERSION}…")
     setup_exe = work / "tesseract-setup.exe"
     _download(TESSERACT_URL, setup_exe)
@@ -285,14 +338,15 @@ def install_tesseract(ui: ProgressUI, work: Path) -> None:
             f"/DIR={TESS_DIR}",
         ],
     )
+    return TESS_DIR
 
 
-def write_launcher() -> None:
+def write_launcher(tess_dir: Path) -> None:
     LAUNCHER.write_text(
         "@echo off\r\n"
         "setlocal\r\n"
-        f'set "PATH={TESS_DIR};%PATH%"\r\n'
-        f'set "TESSDATA_PREFIX={TESS_DIR}"\r\n'
+        f'set "PATH={tess_dir};%PATH%"\r\n'
+        f'set "TESSDATA_PREFIX={tess_dir}"\r\n'
         f'start "" "{PY_EXE}" -m fishbot.gui %*\r\n',
         encoding="ascii",
     )
@@ -335,9 +389,9 @@ def install(ui: ProgressUI) -> None:
         install_python(ui, work)
         install_pip(ui, work)
         install_fishbot_source(ui, work)
-        install_tesseract(ui, work)
+        tess_dir = install_tesseract(ui, work)
         install_python_deps(ui)
-    write_launcher()
+    write_launcher(tess_dir)
     make_start_menu_shortcut()
     ui.set("Launching Fishbot…")
     launch_gui()
